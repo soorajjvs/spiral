@@ -1,0 +1,396 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>Neon Silk: The Digital Veil</title>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/p5.js/1.9.0/p5.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/p5.js/1.9.0/addons/p5.sound.min.js"></script>
+    <style>
+        body {
+            margin: 0;
+            padding: 0;
+            background-color: #020204; /* Void Black */
+            overflow: hidden;
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            user-select: none;
+            -webkit-user-select: none;
+            touch-action: none;
+        }
+        
+        #canvas-container {
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            z-index: 1;
+            /* Silk Glow */
+            filter: contrast(1.2) brightness(1.3) saturate(1.2);
+            transform: translateZ(0);
+        }
+
+        .overlay-text {
+            position: absolute;
+            width: 100%;
+            text-align: center;
+            pointer-events: none;
+            z-index: 10;
+            transition: opacity 1.5s ease-in-out;
+            color: #e2e8f0;
+            letter-spacing: 6px;
+            text-transform: uppercase;
+            mix-blend-mode: screen;
+        }
+
+        #hint-text {
+            top: 48%;
+            font-size: clamp(1rem, 4vw, 2rem);
+            font-weight: 300;
+            text-shadow: 0 0 20px rgba(255,255,255,0.5);
+        }
+        
+        #breathe-text {
+            bottom: 10%;
+            font-size: 0.8rem;
+            opacity: 0.6;
+            color: #94a3b8;
+        }
+
+        .vignette {
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            background: radial-gradient(circle, transparent 20%, #000000 100%);
+            pointer-events: none;
+            z-index: 5;
+        }
+    </style>
+</head>
+<body>
+
+    <div id="canvas-container"></div>
+    <div class="vignette"></div>
+    
+    <div id="hint-text" class="overlay-text">Brush the Veil</div>
+    <div id="breathe-text" class="overlay-text">Binaural Silk Texture</div>
+
+    <script>
+        // --- CONFIG ---
+        const CONFIG = {
+            strandCount: 60,     // Number of vertical lines
+            segments: 15,        // Points per line (flexibility)
+            gravity: 0.15,
+            stiffness: 0.2,      // Spring strength
+            friction: 0.9,       // Drag
+            interactionRadius: 100
+        };
+
+        // --- GLOBAL STATE ---
+        let strands = [];
+        let audioStarted = false;
+        let audioEngine;
+        
+        // Interaction
+        let isTouching = false;
+        let touchPos;
+        let prevTouchPos;
+        let mouseVel = 0;
+
+        function setup() {
+            let canvas = createCanvas(windowWidth, windowHeight);
+            canvas.parent('canvas-container');
+            colorMode(HSB, 360, 100, 100, 100);
+            
+            touchPos = createVector(0, 0);
+            prevTouchPos = createVector(0, 0);
+            audioEngine = new AudioEngine();
+            
+            initVeil();
+        }
+
+        function windowResized() {
+            resizeCanvas(windowWidth, windowHeight);
+            initVeil();
+        }
+
+        function initVeil() {
+            strands = [];
+            let spacing = width / (CONFIG.strandCount + 1);
+            
+            for(let i = 0; i < CONFIG.strandCount; i++) {
+                let x = (i + 1) * spacing;
+                // Hue gradient across the screen
+                let hueVal = map(i, 0, CONFIG.strandCount, 160, 300); // Teal to Purple
+                strands.push(new Strand(x, hueVal));
+            }
+        }
+
+        function draw() {
+            // Trails for "Motion Blur" feel
+            noStroke();
+            fill(230, 40, 3, 25); // Deep dark background
+            rect(0, 0, width, height);
+
+            let currentSpeed = p5.Vector.dist(touchPos, prevTouchPos);
+            mouseVel = lerp(mouseVel, currentSpeed, 0.2);
+
+            // Physics & Drawing
+            blendMode(ADD); // Glowing threads
+            
+            let totalMovement = 0;
+
+            for(let s of strands) {
+                s.interact(touchPos, isTouching);
+                s.update();
+                s.display();
+                totalMovement += s.getMovementEnergy();
+            }
+            
+            blendMode(BLEND);
+
+            // Audio Updates
+            if(audioStarted) {
+                document.getElementById('hint-text').style.opacity = 0;
+                // Pass average X position of touch for panning
+                let pan = map(touchPos.x, 0, width, -1, 1);
+                audioEngine.update(mouseVel, totalMovement, pan);
+            }
+
+            prevTouchPos.set(touchPos);
+        }
+
+        // --- CLASSES ---
+
+        class Node {
+            constructor(x, y, isFixed) {
+                this.pos = createVector(x, y);
+                this.oldPos = createVector(x, y); // For Verlet Integration
+                this.isFixed = isFixed;
+            }
+        }
+
+        class Strand {
+            constructor(x, hueVal) {
+                this.nodes = [];
+                this.hueVal = hueVal;
+                this.segLen = (height * 0.8) / CONFIG.segments;
+                
+                // Create chain
+                for(let i=0; i<CONFIG.segments; i++) {
+                    let isFixed = (i === 0); // Top point is fixed
+                    this.nodes.push(new Node(x, i * this.segLen + 50, isFixed));
+                }
+            }
+
+            interact(target, active) {
+                if(!active) return;
+
+                for(let n of this.nodes) {
+                    if(n.isFixed) continue;
+                    
+                    let d = dist(target.x, target.y, n.pos.x, n.pos.y);
+                    if(d < CONFIG.interactionRadius) {
+                        let force = p5.Vector.sub(n.pos, target);
+                        force.normalize();
+                        // Push away force (The Parting of the Veil)
+                        let strength = map(d, 0, CONFIG.interactionRadius, 15, 0);
+                        
+                        // Add mouse velocity influence (Combing effect)
+                        let velForce = p5.Vector.sub(touchPos, prevTouchPos);
+                        velForce.mult(0.5);
+                        
+                        // Verlet adjustment: move pos directly
+                        n.pos.add(force.mult(strength));
+                        n.pos.add(velForce);
+                    }
+                }
+            }
+
+            update() {
+                // Verlet Integration (Stable Cloth Physics)
+                for(let n of this.nodes) {
+                    if(n.isFixed) continue;
+                    
+                    let vel = p5.Vector.sub(n.pos, n.oldPos);
+                    vel.mult(CONFIG.friction);
+                    
+                    n.oldPos.set(n.pos);
+                    
+                    // Gravity
+                    n.pos.add(0, CONFIG.gravity);
+                    n.pos.add(vel);
+                }
+
+                // Constraint Resolution (Keep segments together)
+                // Iterate a few times for stiffness
+                for(let k=0; k<3; k++) {
+                    for(let i=0; i<this.nodes.length - 1; i++) {
+                        let n1 = this.nodes[i];
+                        let n2 = this.nodes[i+1];
+                        
+                        let delta = p5.Vector.sub(n2.pos, n1.pos);
+                        let dist = delta.mag();
+                        let diff = (dist - this.segLen) / dist;
+                        
+                        let offset = delta.mult(diff * 0.5);
+                        
+                        if(!n1.isFixed) n1.pos.add(offset);
+                        if(!n2.isFixed) n2.pos.sub(offset);
+                    }
+                }
+            }
+
+            getMovementEnergy() {
+                // Calculate kinetic energy of the tip for audio
+                let tip = this.nodes[this.nodes.length-1];
+                let vel = p5.Vector.dist(tip.pos, tip.oldPos);
+                return vel;
+            }
+
+            display() {
+                noFill();
+                strokeWeight(2);
+                
+                // Draw the curve
+                beginShape();
+                // Start vertex
+                curveVertex(this.nodes[0].pos.x, this.nodes[0].pos.y);
+                
+                for(let i=0; i<this.nodes.length; i++) {
+                    let n = this.nodes[i];
+                    
+                    // Dynamic Color based on tension/movement
+                    let vel = p5.Vector.dist(n.pos, n.oldPos);
+                    let bright = map(vel, 0, 5, 60, 100);
+                    let hueShift = map(vel, 0, 5, 0, 30); // Shift to white/yellow on fast move
+                    
+                    stroke((this.hueVal + hueShift)%360, 80, bright, 80);
+                    curveVertex(n.pos.x, n.pos.y);
+                }
+                // End vertex duplication for curve
+                curveVertex(this.nodes[this.nodes.length-1].pos.x, this.nodes[this.nodes.length-1].pos.y);
+                endShape();
+                
+                // Tip Glow
+                let tip = this.nodes[this.nodes.length-1];
+                noStroke();
+                fill(this.hueVal, 40, 100, 50);
+                ellipse(tip.pos.x, tip.pos.y, 6);
+            }
+        }
+
+        // --- AUDIO ENGINE (Binaural Brush) ---
+        
+        class AudioEngine {
+            constructor() {
+                this.ctx = getAudioContext();
+                this.reverb = new p5.Reverb();
+                this.reverb.set(3, 2); // Smooth room
+
+                // 1. The Brush (Filtered Noise)
+                this.brush = new p5.Noise('pink');
+                this.brush.amp(0);
+                this.brush.start();
+                
+                this.brushFilter = new p5.LowPass();
+                this.brushFilter.freq(500);
+                
+                // Signal Chain: Noise -> Filter -> Master
+                this.brush.disconnect();
+                this.brush.connect(this.brushFilter);
+                this.brushFilter.disconnect(); 
+                this.brushFilter.connect(); // Dry output
+
+                // 2. The Sparkles (Movement Chimes)
+                this.poly = new p5.PolySynth();
+                this.poly.setADSR(0.01, 0.1, 0.0, 0.2);
+                this.reverb.process(this.poly, 2, 2);
+
+                // 3. Deep Pad (Atmosphere)
+                this.pad = new p5.Oscillator('sine');
+                this.pad.freq(100);
+                this.pad.amp(0);
+                this.pad.disconnect();
+                this.pad.connect(this.reverb);
+
+                this.lastChime = 0;
+            }
+
+            start() {
+                this.pad.start();
+                this.pad.amp(0.1, 5);
+            }
+
+            update(speed, totalMovement, panX) {
+                // Brush Sound: Linked to mouse speed
+                let targetVol = map(speed, 0, 50, 0, 0.4);
+                targetVol = constrain(targetVol, 0, 0.4);
+                this.brush.amp(targetVol, 0.1);
+                
+                // Filter opens with speed
+                let targetFreq = map(speed, 0, 50, 400, 3000);
+                this.brushFilter.freq(targetFreq);
+                
+                // Panning follows finger using built-in noise pan
+                this.brush.pan(panX);
+
+                // Chimes: Trigger based on total silk movement energy
+                if (totalMovement > 10) {
+                    this.playChime(totalMovement);
+                }
+            }
+
+            playChime(energy) {
+                let now = millis();
+                // Rate limit based on energy (Higher energy = faster chimes allow)
+                let limit = map(energy, 10, 100, 200, 50);
+                if (now - this.lastChime < limit) return;
+                this.lastChime = now;
+
+                // Ethereal Scale (Lydian-ish)
+                let notes = [523.25, 659.25, 739.99, 880.00, 1046.50, 1318.51];
+                let note = random(notes);
+                
+                // Velocity based on energy
+                let vel = map(energy, 10, 100, 0.02, 0.1);
+                
+                try {
+                    this.poly.play(note, vel, 0, 0.1);
+                } catch(e) {}
+            }
+        }
+
+        // --- INTERACTION ---
+
+        function handleStart(x, y) {
+            if(!audioStarted) {
+                userStartAudio();
+                audioEngine.start();
+                audioStarted = true;
+            }
+            isTouching = true;
+            touchPos.set(x, y);
+            prevTouchPos.set(x, y);
+        }
+
+        function handleMove(x, y) {
+            touchPos.set(x, y);
+        }
+
+        function handleEnd() {
+            isTouching = false;
+        }
+
+        function mousePressed() { handleStart(mouseX, mouseY); return false; }
+        function mouseDragged() { handleMove(mouseX, mouseY); return false; }
+        function mouseReleased() { handleEnd(); return false; }
+        function touchStarted() { handleStart(touches[0].x, touches[0].y); return false; }
+        function touchMoved() { handleMove(touches[0].x, touches[0].y); return false; }
+        function touchEnded() { handleEnd(); return false; }
+
+    </script>
+</body>
+</html>
